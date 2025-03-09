@@ -7,6 +7,7 @@
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_seat.h>
 
+#include "ime.h"
 #include "server.h"
 #include "view.h"
 
@@ -46,11 +47,15 @@ struct cg_seat {
 	struct wl_listener request_set_cursor;
 	struct wl_listener request_set_selection;
 	struct wl_listener request_set_primary_selection;
+
+	struct cg_ime_relay ime_relay;
 };
 
 struct cg_keyboard_group {
 	struct wlr_keyboard_group *wlr_group;
 	struct cg_seat *seat;
+	// only useful for virtual keyboards
+	struct wlr_keyboard *original_keyboard;
 	struct wl_listener key;
 	struct wl_listener modifiers;
 	struct wl_list link; // cg_seat::keyboard_groups
