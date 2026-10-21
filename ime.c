@@ -51,8 +51,11 @@ handle_im_commit(struct wl_listener *listener, void *data)
 	if (!text_input) {
 		return;
 	}
-	struct wlr_input_method_v2 *context = data;
-	assert(context == relay->input_method);
+	/* wlroots 0.20 emits this signal with NULL data. */
+	struct wlr_input_method_v2 *context = relay->input_method;
+	if (!context) {
+		return;
+	}
 	if (context->current.preedit.text) {
 		wlr_text_input_v3_send_preedit_string(text_input->input, context->current.preedit.text,
 						      context->current.preedit.cursor_begin,
@@ -114,8 +117,10 @@ static void
 handle_im_destroy(struct wl_listener *listener, void *data)
 {
 	struct cg_ime_relay *relay = wl_container_of(listener, relay, input_method_destroy);
-	struct wlr_input_method_v2 *context = data;
-	assert(context == relay->input_method);
+	/* wlroots 0.20 emits this signal with NULL data. */
+	if (!relay->input_method) {
+		return;
+	}
 	wl_list_remove(&relay->input_method_commit.link);
 	wl_list_remove(&relay->input_method_grab_keyboard.link);
 	wl_list_remove(&relay->input_method_destroy.link);
