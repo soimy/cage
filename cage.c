@@ -743,6 +743,13 @@ end:
 		app_ret = cleanup_primary_client(pid);
 	if (!ret && server.return_app_code)
 		ret = app_ret;
+	/* wlroots requires manager signal listeners to be detached before display teardown. */
+	if (server.input_method_manager_v2) {
+		wl_list_remove(&server.new_input_method.link);
+	}
+	if (server.text_input_manager_v3) {
+		wl_list_remove(&server.new_text_input.link);
+	}
 
 	wl_event_source_remove(sigint_source);
 	wl_event_source_remove(sigterm_source);
