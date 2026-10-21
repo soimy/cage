@@ -97,6 +97,7 @@ cage_sources = [
   'seat.c',
   'view.c',
   'xdg_shell.c',
+  'ime.c',
   configure_file(input: 'config.h.in',
                  output: 'config.h',
                  configuration: conf_data),
