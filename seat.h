@@ -60,6 +60,7 @@ struct cg_keyboard_group {
 	struct wl_listener modifiers;
 	struct wl_list link; // cg_seat::keyboard_groups
 	bool is_virtual;
+	uint32_t compositor_keycode;
 };
 
 struct cg_pointer {

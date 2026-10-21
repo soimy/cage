@@ -35,6 +35,15 @@ view_get_title(struct cg_view *view)
 	return strndup(title, strlen(title));
 }
 
+const char *
+view_get_app_id(struct cg_view *view)
+{
+	if (!view->impl->get_app_id) {
+		return NULL;
+	}
+	return view->impl->get_app_id(view);
+}
+
 bool
 view_is_primary(struct cg_view *view)
 {

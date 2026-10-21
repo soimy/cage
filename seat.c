@@ -11,9 +11,16 @@
 #include "config.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <linux/input-event-codes.h>
+#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/backend/multi.h>
@@ -279,6 +286,158 @@ handle_keybinding(struct cg_server *server, xkb_keysym_t sym)
 }
 
 static bool
+spawn_app(char *const argv[])
+{
+	pid_t child = fork();
+	if (child == -1) {
+		wlr_log_errno(WLR_ERROR, "Unable to fork application");
+		return false;
+	}
+	if (child == 0) {
+		sigset_t set;
+		sigemptyset(&set);
+		sigprocmask(SIG_SETMASK, &set, NULL);
+		pid_t app = fork();
+		if (app == -1) {
+			_exit(127);
+		}
+		if (app > 0) {
+			_exit(0);
+		}
+
+		if (setsid() == -1) {
+			_exit(127);
+		}
+		int null_fd = open("/dev/null", O_RDWR);
+		if (null_fd >= 0) {
+			dup2(null_fd, STDIN_FILENO);
+			dup2(null_fd, STDOUT_FILENO);
+			if (null_fd > STDERR_FILENO) {
+				close(null_fd);
+			}
+		}
+		execvp(argv[0], argv);
+		_exit(127);
+	}
+
+	while (waitpid(child, NULL, 0) == -1) {
+		if (errno != EINTR) {
+			wlr_log_errno(WLR_ERROR, "Unable to reap application launcher");
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool
+focus_view(struct cg_seat *seat, struct cg_view *view)
+{
+	if (!view || !view->scene_tree || view->wlr_surface == NULL) {
+		return false;
+	}
+	wlr_scene_node_raise_to_top(&view->scene_tree->node);
+	seat_set_focus(seat, view);
+	return true;
+}
+
+static bool
+view_matches_app(struct cg_view *view, const char *app)
+{
+	const char *app_id = view_get_app_id(view);
+	if (!app_id) {
+		return false;
+	}
+	if (strcmp(app, "foot") == 0) {
+		return strcmp(app_id, "foot") == 0;
+	}
+	return strcmp(app_id, "google-chrome") == 0 || strcmp(app_id, "com.google.Chrome") == 0 ||
+	       strcmp(app_id, "Google-chrome") == 0;
+}
+
+static bool
+focus_app(struct cg_seat *seat, const char *app)
+{
+	struct cg_view *view;
+	wl_list_for_each (view, &seat->server->views, link) {
+		if (view->type != CAGE_INPUT_POPUP_VIEW && view_is_primary(view) && view_matches_app(view, app)) {
+			return focus_view(seat, view);
+		}
+	}
+	return false;
+}
+
+static bool
+focus_view_by_launch_order(struct cg_seat *seat, unsigned int index)
+{
+	struct cg_view *view;
+	unsigned int current = 0;
+	wl_list_for_each_reverse (view, &seat->server->views, link) {
+		if (view->type == CAGE_INPUT_POPUP_VIEW || !view->wlr_surface || !view_is_primary(view)) {
+			continue;
+		}
+		if (current++ == index) {
+			return focus_view(seat, view);
+		}
+	}
+	return false;
+}
+
+static void
+launch_foot(void)
+{
+	const char *font_size = getenv("TTY_CAGE_FONT_SIZE");
+	const char *session = getenv("TTY_CAGE_TMUX_SESSION");
+	char font_arg[128];
+	if (!font_size || !*font_size) {
+		font_size = "9";
+	}
+	if (!session || !*session) {
+		session = "llm";
+	}
+	snprintf(font_arg, sizeof(font_arg), "--font=Maple Mono NF CN:size=%s", font_size);
+	char *argv[] = {"foot", "--override=dpi-aware=no", "--app-id=foot", font_arg, "--fullscreen", "--",
+		"tmux", "new-session", "-A", "-s", (char *)session, NULL};
+	spawn_app(argv);
+}
+
+static void
+launch_chrome(void)
+{
+	char *argv[] = {"flatpak", "run", "com.google.Chrome", "--ozone-platform=wayland", NULL};
+	spawn_app(argv);
+}
+
+static bool
+handle_app_keybinding(struct cg_seat *seat, xkb_keysym_t sym, uint32_t modifiers)
+{
+	uint32_t relevant = modifiers & (WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT | WLR_MODIFIER_SHIFT | WLR_MODIFIER_LOGO);
+	if (relevant == WLR_MODIFIER_LOGO && sym == XKB_KEY_Return) {
+		if (!focus_app(seat, "foot")) {
+			launch_foot();
+		}
+		return true;
+	}
+	if (relevant == (WLR_MODIFIER_LOGO | WLR_MODIFIER_SHIFT) && sym == XKB_KEY_Return) {
+		if (!focus_app(seat, "chrome")) {
+			launch_chrome();
+		}
+		return true;
+	}
+	if (relevant == WLR_MODIFIER_LOGO && sym >= XKB_KEY_1 && sym <= XKB_KEY_5) {
+		focus_view_by_launch_order(seat, sym - XKB_KEY_1);
+		return true;
+	}
+	if (relevant == WLR_MODIFIER_LOGO && sym == XKB_KEY_w) {
+		struct cg_view *view = seat_get_focus(seat);
+		if (view && view->impl->close) {
+			view->impl->close(view);
+		}
+		return true;
+	}
+	return false;
+}
+
+static bool
 is_keyboard_emulated(struct cg_keyboard_group *cg_group)
 {
 	if (!cg_group->is_virtual) {
@@ -329,13 +488,31 @@ handle_key_event(struct cg_keyboard_group *cg_group, void *data)
 
 	bool handled = false;
 	uint32_t modifiers = wlr_keyboard_get_modifiers(keyboard);
-	if ((modifiers & WLR_MODIFIER_ALT) && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+	if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED && cg_group->compositor_keycode == event->keycode) {
+		cg_group->compositor_keycode = 0;
+		handled = true;
+	}
+	if (!handled && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		for (int i = 0; i < nsyms; i++) {
+			if (handle_app_keybinding(seat, syms[i], modifiers)) {
+				handled = true;
+				break;
+			}
+		}
+	}
+	if (!handled && (modifiers & WLR_MODIFIER_ALT) && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 		/* If Alt is held down and this button was pressed, we
 		 * attempt to process it as a compositor
 		 * keybinding. */
 		for (int i = 0; i < nsyms; i++) {
 			handled = handle_keybinding(seat->server, syms[i]);
+			if (handled) {
+				break;
+			}
 		}
+	}
+	if (handled && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		cg_group->compositor_keycode = event->keycode;
 	}
 
 	// try to forward the key to the input method
