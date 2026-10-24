@@ -76,13 +76,16 @@ handle_im_keyboard_grab_destroy(struct wl_listener *listener, void *data)
 {
 	struct cg_ime_relay *relay = wl_container_of(listener, relay, input_method_keyboard_grab_destroy);
 	struct wlr_input_method_keyboard_grab_v2 *keyboard_grab = data;
-	struct wlr_seat *wlr_seat = keyboard_grab->input_method->seat;
+	/* The input method may already be gone when wlroots destroys its grab. */
+	struct wlr_seat *wlr_seat = relay->seat->seat;
+	/* wlroots 0.20 emits destroy signals with NULL event data. */
+	struct wlr_keyboard *keyboard = keyboard_grab ? keyboard_grab->keyboard : wlr_seat_get_keyboard(wlr_seat);
 	wl_list_remove(&relay->input_method_keyboard_grab_destroy.link);
 
-	if (keyboard_grab->keyboard) {
+	if (keyboard) {
 		// send modifier state to original client
-		wlr_seat_set_keyboard(wlr_seat, keyboard_grab->keyboard);
-		wlr_seat_keyboard_notify_modifiers(wlr_seat, &keyboard_grab->keyboard->modifiers);
+		wlr_seat_set_keyboard(wlr_seat, keyboard);
+		wlr_seat_keyboard_notify_modifiers(wlr_seat, &keyboard->modifiers);
 	}
 }
 
